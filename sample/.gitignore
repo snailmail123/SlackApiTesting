@@ -5,3 +5,4 @@ yarn-error.log
 
 # Ignore allMessages.json
 allMessages.json
+service-account-file.json

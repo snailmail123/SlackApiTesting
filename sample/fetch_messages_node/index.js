@@ -1,20 +1,29 @@
+require('dotenv').config({ path: '../.env' });
 const { WebClient } = require('@slack/web-api');
-const fs = require('fs');
-require('dotenv').config()
+const { Firestore } = require('@google-cloud/firestore');
+const path = require('path');
 
 const token = process.env.SLACK_TOKEN;
+const projectId = process.env.PROJECT_ID;
+const keyFilename = path.join(__dirname, '..', process.env.GOOGLE_APPLICATION_CREDENTIALS);
+const companyName = 'ctrlpanel';
+
+if (!token) {
+  throw new Error('SLACK_TOKEN environment variable is not set.');
+}
+if (!projectId) {
+  throw new Error('PROJECT_ID environment variable is not set.');
+}
+if (!keyFilename) {
+  throw new Error('GOOGLE_APPLICATION_CREDENTIALS environment variable is not set.');
+}
+
 const web = new WebClient(token);
 
-/**
- * This script fetches all the messages from all channels in a Slack workspace (excluding dm's) and writes them to a JSON file.
- * The user token scopes used: channels:history, channels:read
- * It uses the Slack Web API to:
- * 1. Fetch a list of all channels in the workspace.
- * 2. Iterate through each channel and fetch all messages from that channel.
- * 3. Handle pagination to ensure all messages are retrieved.
- * 4. Respect Slack API rate limits to avoid being rate-limited.
- * 5. Write the fetched messages to a JSON file named 'allMessages.json'.
- */
+const firestore = new Firestore({
+  projectId: projectId,
+  keyFilename: keyFilename
+});
 
 async function fetchAllChannels() {
   try {
@@ -63,7 +72,12 @@ async function fetchAllMessagesFromChannel(channelId) {
       hasMore = !!cursor;
     }
 
-    return messages;
+    return messages.map(message => ({
+      user: message.user || null,
+      text: message.text || '',
+      ts: message.ts || null,
+      type: message.type || ''
+    }));
   } catch (error) {
     console.error(`Error fetching messages from channel ${channelId}:`, error);
     return [];
@@ -73,34 +87,33 @@ async function fetchAllMessagesFromChannel(channelId) {
 async function fetchAllMessagesFromMultipleChannels() {
   try {
     const channels = await fetchAllChannels();
-    const allMessages = {};
-
     for (const { id, name } of channels) {
-      console.log(`Fetching messages from channel: ${name} (${id})`);
+      console.log(`Channel: ${name} (${id})`);
       const channelMessages = await fetchAllMessagesFromChannel(id);
-      allMessages[name] = channelMessages;
-      console.log(`Fetched ${channelMessages.length} messages from channel: ${name}`);
+      
+      console.log(`Messages from channel: ${name} (${id}):`);
+      channelMessages.forEach(message => {
+        console.log(message);
+      });
+
+      const batch = firestore.batch();
+      const channelDocRef = firestore.collection(companyName).doc(name);
+      channelMessages.forEach(message => {
+        const messageRef = channelDocRef.collection('messages').doc();
+        batch.set(messageRef, message);
+      });
+      await batch.commit();
+      console.log(`Stored ${channelMessages.length} messages from channel: ${name} in Firestore`);
     }
 
-    // Save to file
-    fs.writeFileSync('allMessages.json', JSON.stringify(allMessages, null, 2));
-    console.log('Messages have been written to allMessages.json');
-
-    return allMessages;
+    console.log('Messages have been fetched from all channels');
   } catch (error) {
     console.error('Error fetching messages from multiple channels:', error);
-    return {};
   }
 }
 
-fetchAllMessagesFromMultipleChannels()
-  .then(allMessages => {
-    if (Object.keys(allMessages).length > 0) {
-      console.log('Fetched messages from all channels.');
-    } else {
-      console.log('No messages retrieved.');
-    }
-  })
-  .catch(error => {
-    console.error('Error in fetchAllMessagesFromMultipleChannels:', error);
-  });
+fetchAllMessagesFromMultipleChannels().then(() => {
+  console.log('Finished fetching messages');
+}).catch(error => {
+  console.error('Error during execution:', error);
+});
